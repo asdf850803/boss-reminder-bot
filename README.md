@@ -1,1 +1,100 @@
-# boss-reminder-bot
+import discord
+from discord.ext import commands, tasks
+import datetime
+import json
+import os
+
+import os
+TOKEN = os.getenv("BOT_TOKEN")  # 從 Railway 環境變數讀取 Token
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+boss_data = {
+    "小巴": 6 * 60 + 45,
+    "雪女": 2 * 60 + 40,
+    "雪毛怪人": 45,
+    "黑輪王": 13 * 60,
+    "九尾": 3 * 60 + 30,
+    "書生": 2 * 60 + 30,
+    "殭屍姑姑王": 3 * 60 + 15
+}
+
+DATA_FILE = "death_records.json"
+
+# 載入紀錄檔
+if os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "r") as f:
+        death_times = json.load(f)
+else:
+    death_times = {}
+
+@bot.event
+async def on_ready():
+    print(f"✅ 機器人已啟動為：{bot.user}")
+    reminder_loop.start()
+
+@bot.command()
+async def kill(ctx, boss: str, channel: discord.TextChannel = None):
+    if boss not in boss_data:
+        await ctx.send(f"❌ 沒有這隻王：{boss}")
+        return
+
+    now = datetime.datetime.utcnow().isoformat()
+    record = {
+        "time": now,
+        "channel_id": (channel.id if channel else ctx.channel.id)
+    }
+    death_times[boss] = record
+
+    with open(DATA_FILE, "w") as f:
+        json.dump(death_times, f)
+
+    await ctx.send(
+        f"✅ 已記錄 {boss} 的死亡時間為 {datetime.datetime.utcnow().strftime('%H:%M UTC')}，將於 <#{record['channel_id']}> 發送提醒"
+    )
+
+@bot.command()
+async def respawn(ctx, boss: str):
+    if boss not in death_times:
+        await ctx.send(f"⚠️ 尚未記錄 {boss} 的死亡時間")
+        return
+
+    dt = datetime.datetime.fromisoformat(death_times[boss]["time"])
+    respawn_dt = dt + datetime.timedelta(minutes=boss_data[boss])
+    await ctx.send(f"🕒 {boss} 預計重生時間：{respawn_dt.strftime('%Y-%m-%d %H:%M UTC')}")
+
+@bot.command()
+async def bosslist(ctx):
+    if not death_times:
+        await ctx.send("📭 尚未記錄任何王")
+        return
+
+    msg = "📜 王重生清單：\n"
+    for boss, info in death_times.items():
+        dt = datetime.datetime.fromisoformat(info["time"])
+        respawn_dt = dt + datetime.timedelta(minutes=boss_data[boss])
+        msg += f"🔸 {boss} → {respawn_dt.strftime('%H:%M UTC')} | 頻道：<#{info['channel_id']}>\n"
+    await ctx.send(msg)
+
+@tasks.loop(minutes=1)
+async def reminder_loop():
+    now = datetime.datetime.utcnow()
+    for boss, info in list(death_times.items()):
+        dt = datetime.datetime.fromisoformat(info["time"])
+        respawn_dt = dt + datetime.timedelta(minutes=boss_data[boss])
+        delta = (respawn_dt - now).total_seconds()
+
+        try:
+            channel = bot.get_channel(info["channel_id"])
+            if not channel:
+                continue
+            if 0 < delta <= 600:
+                await channel.send(f"⏰ {boss} 將在 10 分鐘內重生！")
+            elif -60 < delta <= 0:
+                await channel.send(f"🎉 {boss} 已重生囉，快集合！")
+        except Exception as e:
+            print(f"提醒失敗：{boss} → {e}")
+
+bot.run(TOKEN)
